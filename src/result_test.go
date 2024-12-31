@@ -54,9 +54,9 @@ func TestResultRank(t *testing.T) {
 	// FIXME global
 	sortCriteria = []criterion{byScore, byLength}
 
-	strs := [][]rune{[]rune("foo"), []rune("foobar"), []rune("bar"), []rune("baz")}
+	str := []rune("foo")
 	item1 := buildResult(
-		withIndex(&Item{text: util.RunesToChars(strs[0])}, 1), []Offset{}, 2)
+		withIndex(&Item{text: util.RunesToChars(str)}, 1), []Offset{}, 2)
 	if item1.points[3] != math.MaxUint16-2 || // Bonus
 		item1.points[2] != 3 || // Length
 		item1.points[1] != 0 || // Unused
@@ -65,7 +65,7 @@ func TestResultRank(t *testing.T) {
 		t.Error(item1)
 	}
 	// Only differ in index
-	item2 := buildResult(&Item{text: util.RunesToChars(strs[0])}, []Offset{}, 2)
+	item2 := buildResult(&Item{text: util.RunesToChars(str)}, []Offset{}, 2)
 
 	items := []Result{item1, item2}
 	sort.Sort(ByRelevance(items))
@@ -98,19 +98,36 @@ func TestResultRank(t *testing.T) {
 	}
 }
 
+func TestChunkTiebreak(t *testing.T) {
+	// FIXME global
+	sortCriteria = []criterion{byScore, byChunk}
+
+	score := 100
+	test := func(input string, offset Offset, chunk string) {
+		item := buildResult(withIndex(&Item{text: util.RunesToChars([]rune(input))}, 1), []Offset{offset}, score)
+		if !(item.points[3] == math.MaxUint16-uint16(score) && item.points[2] == uint16(len(chunk))) {
+			t.Error(item.points)
+		}
+	}
+	test("hello foobar goodbye", Offset{8, 9}, "foobar")
+	test("hello foobar goodbye", Offset{7, 18}, "foobar goodbye")
+	test("hello foobar goodbye", Offset{0, 1}, "hello")
+	test("hello foobar goodbye", Offset{5, 7}, "hello foobar") // TBD
+}
+
 func TestColorOffset(t *testing.T) {
 	// ------------ 20 ----  --  ----
 	//   ++++++++        ++++++++++
 	// --++++++++--    --++++++++++---
 
-	offsets := []Offset{{5, 15}, {25, 35}}
+	offsets := []Offset{{5, 15}, {10, 12}, {25, 35}}
 	item := Result{
 		item: &Item{
 			colors: &[]ansiOffset{
-				{[2]int32{0, 20}, ansiState{1, 5, 0, -1}},
-				{[2]int32{22, 27}, ansiState{2, 6, tui.Bold, -1}},
-				{[2]int32{30, 32}, ansiState{3, 7, 0, -1}},
-				{[2]int32{33, 40}, ansiState{4, 8, tui.Bold, -1}}}}}
+				{[2]int32{0, 20}, ansiState{1, 5, 0, -1, nil}},
+				{[2]int32{22, 27}, ansiState{2, 6, tui.Bold, -1, nil}},
+				{[2]int32{30, 32}, ansiState{3, 7, 0, -1, nil}},
+				{[2]int32{33, 40}, ansiState{4, 8, tui.Bold, -1, nil}}}}}
 
 	colBase := tui.NewColorPair(89, 189, tui.AttrUndefined)
 	colMatch := tui.NewColorPair(99, 199, tui.AttrUndefined)

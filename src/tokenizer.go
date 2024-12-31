@@ -91,7 +91,7 @@ func withPrefixLengths(tokens []string, begin int) []Token {
 
 	prefixLength := begin
 	for idx := range tokens {
-		chars := util.ToChars([]byte(tokens[idx]))
+		chars := util.ToChars(stringBytes(tokens[idx]))
 		ret[idx] = Token{&chars, int32(prefixLength)}
 		prefixLength += chars.Length()
 	}
@@ -156,14 +156,14 @@ func Tokenize(text string, delimiter Delimiter) []Token {
 	// FIXME performance
 	var tokens []string
 	if delimiter.regex != nil {
-		for len(text) > 0 {
-			loc := delimiter.regex.FindStringIndex(text)
-			if len(loc) < 2 {
-				loc = []int{0, len(text)}
-			}
-			last := util.Max(loc[1], 1)
-			tokens = append(tokens, text[:last])
-			text = text[last:]
+		locs := delimiter.regex.FindAllStringIndex(text, -1)
+		begin := 0
+		for _, loc := range locs {
+			tokens = append(tokens, text[begin:loc[1]])
+			begin = loc[1]
+		}
+		if begin < len(text) {
+			tokens = append(tokens, text[begin:])
 		}
 	}
 	return withPrefixLengths(tokens, 0)
@@ -187,7 +187,7 @@ func Transform(tokens []Token, withNth []Range) []Token {
 		if r.begin == r.end {
 			idx := r.begin
 			if idx == rangeEllipsis {
-				chars := util.ToChars([]byte(joinTokens(tokens)))
+				chars := util.ToChars(stringBytes(joinTokens(tokens)))
 				parts = append(parts, &chars)
 			} else {
 				if idx < 0 {

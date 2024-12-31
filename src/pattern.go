@@ -23,6 +23,7 @@ type termType int
 const (
 	termFuzzy termType = iota
 	termExact
+	termExactBoundary
 	termPrefix
 	termSuffix
 	termEqual
@@ -51,6 +52,7 @@ type Pattern struct {
 	caseSensitive bool
 	normalize     bool
 	forward       bool
+	withPos       bool
 	text          []rune
 	termSets      []termSet
 	sortable      bool
@@ -59,33 +61,18 @@ type Pattern struct {
 	delimiter     Delimiter
 	nth           []Range
 	procFun       map[termType]algo.Algo
+	cache         *ChunkCache
 }
 
-var (
-	_patternCache map[string]*Pattern
-	_splitRegex   *regexp.Regexp
-	_cache        ChunkCache
-)
+var _splitRegex *regexp.Regexp
 
 func init() {
 	_splitRegex = regexp.MustCompile(" +")
-	clearPatternCache()
-	clearChunkCache()
-}
-
-func clearPatternCache() {
-	// We can uniquely identify the pattern for a given string since
-	// search mode and caseMode do not change while the program is running
-	_patternCache = make(map[string]*Pattern)
-}
-
-func clearChunkCache() {
-	_cache = NewChunkCache()
 }
 
 // BuildPattern builds Pattern object from the given arguments
-func BuildPattern(fuzzy bool, fuzzyAlgo algo.Algo, extended bool, caseMode Case, normalize bool, forward bool,
-	cacheable bool, nth []Range, delimiter Delimiter, runes []rune) *Pattern {
+func BuildPattern(cache *ChunkCache, patternCache map[string]*Pattern, fuzzy bool, fuzzyAlgo algo.Algo, extended bool, caseMode Case, normalize bool, forward bool,
+	withPos bool, cacheable bool, nth []Range, delimiter Delimiter, runes []rune) *Pattern {
 
 	var asString string
 	if extended {
@@ -97,7 +84,9 @@ func BuildPattern(fuzzy bool, fuzzyAlgo algo.Algo, extended bool, caseMode Case,
 		asString = string(runes)
 	}
 
-	cached, found := _patternCache[asString]
+	// We can uniquely identify the pattern for a given string since
+	// search mode and caseMode do not change while the program is running
+	cached, found := patternCache[asString]
 	if found {
 		return cached
 	}
@@ -145,34 +134,37 @@ func BuildPattern(fuzzy bool, fuzzyAlgo algo.Algo, extended bool, caseMode Case,
 		caseSensitive: caseSensitive,
 		normalize:     normalize,
 		forward:       forward,
+		withPos:       withPos,
 		text:          []rune(asString),
 		termSets:      termSets,
 		sortable:      sortable,
 		cacheable:     cacheable,
 		nth:           nth,
 		delimiter:     delimiter,
+		cache:         cache,
 		procFun:       make(map[termType]algo.Algo)}
 
 	ptr.cacheKey = ptr.buildCacheKey()
 	ptr.procFun[termFuzzy] = fuzzyAlgo
 	ptr.procFun[termEqual] = algo.EqualMatch
 	ptr.procFun[termExact] = algo.ExactMatchNaive
+	ptr.procFun[termExactBoundary] = algo.ExactMatchBoundary
 	ptr.procFun[termPrefix] = algo.PrefixMatch
 	ptr.procFun[termSuffix] = algo.SuffixMatch
 
-	_patternCache[asString] = ptr
+	patternCache[asString] = ptr
 	return ptr
 }
 
 func parseTerms(fuzzy bool, caseMode Case, normalize bool, str string) []termSet {
-	str = strings.Replace(str, "\\ ", "\t", -1)
+	str = strings.ReplaceAll(str, "\\ ", "\t")
 	tokens := _splitRegex.Split(str, -1)
 	sets := []termSet{}
 	set := termSet{}
 	switchSet := false
 	afterBar := false
 	for _, token := range tokens {
-		typ, inv, text := termFuzzy, false, strings.Replace(token, "\t", " ", -1)
+		typ, inv, text := termFuzzy, false, strings.ReplaceAll(token, "\t", " ")
 		lowerText := strings.ToLower(text)
 		caseSensitive := caseMode == CaseRespect ||
 			caseMode == CaseSmart && text != lowerText
@@ -203,15 +195,17 @@ func parseTerms(fuzzy bool, caseMode Case, normalize bool, str string) []termSet
 			text = text[:len(text)-1]
 		}
 
-		if strings.HasPrefix(text, "'") {
+		if len(text) > 2 && strings.HasPrefix(text, "'") && strings.HasSuffix(text, "'") {
+			typ = termExactBoundary
+			text = text[1 : len(text)-1]
+		} else if strings.HasPrefix(text, "'") {
 			// Flip exactness
 			if fuzzy && !inv {
 				typ = termExact
-				text = text[1:]
 			} else {
 				typ = termFuzzy
-				text = text[1:]
 			}
+			text = text[1:]
 		} else if strings.HasPrefix(text, "^") {
 			if typ == termSuffix {
 				typ = termEqual
@@ -281,18 +275,18 @@ func (p *Pattern) Match(chunk *Chunk, slab *util.Slab) []Result {
 	// ChunkCache: Exact match
 	cacheKey := p.CacheKey()
 	if p.cacheable {
-		if cached := _cache.Lookup(chunk, cacheKey); cached != nil {
+		if cached := p.cache.Lookup(chunk, cacheKey); cached != nil {
 			return cached
 		}
 	}
 
 	// Prefix/suffix cache
-	space := _cache.Search(chunk, cacheKey)
+	space := p.cache.Search(chunk, cacheKey)
 
 	matches := p.matchChunk(chunk, space, slab)
 
 	if p.cacheable {
-		_cache.Add(chunk, cacheKey, matches)
+		p.cache.Add(chunk, cacheKey, matches)
 	}
 	return matches
 }
@@ -302,13 +296,13 @@ func (p *Pattern) matchChunk(chunk *Chunk, space []Result, slab *util.Slab) []Re
 
 	if space == nil {
 		for idx := 0; idx < chunk.count; idx++ {
-			if match, _, _ := p.MatchItem(&chunk.items[idx], false, slab); match != nil {
+			if match, _, _ := p.MatchItem(&chunk.items[idx], p.withPos, slab); match != nil {
 				matches = append(matches, *match)
 			}
 		}
 	} else {
 		for _, result := range space {
-			if match, _, _ := p.MatchItem(result.item, false, slab); match != nil {
+			if match, _, _ := p.MatchItem(result.item, p.withPos, slab); match != nil {
 				matches = append(matches, *match)
 			}
 		}
